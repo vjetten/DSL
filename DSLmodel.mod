@@ -16,7 +16,10 @@ binding
   LDD = "$2/ldd.map";
   landuse = "$2/landuse.map";
   chanmask = "$2/chanmask.map";
-  
+  chanwidth = "$2/chanwidt.map";
+##  chanheight = "$2/chanheight.map";
+  LDDchan ="$2/lddchan.map";
+##  
   Ksat1 = "$2/ksat1.map";                # ksat map in mm/h
   theta_s = "$2/thetas1.map";            # porosity (fraction)
   thetainit = "$2/thetai1.map";          # initial moisture content
@@ -39,7 +42,7 @@ binding
 
 ### calibration factors ###
 
-  infil_cal = 0.75;   # lower is more runoff, calibration factor Ksat, influences infiltration  
+  infil_cal = $4;    # lower is more runoff, calibration factor Ksat, influences infiltration  
                       # calibrate until the fraction runoff is acceptable
   coh_cal = 2.0;      # lower is more flow erosion 
   Splash_cal = 1.0;   # lower is less splash erosion  
@@ -72,7 +75,10 @@ binding
   moisture_tss = moisture$3.tss;     # average daily soil moisture (mm) 
   LUtheta_tss = thetaLU$3.tss;       # theta per landuse
   Soillosslu_tss = SoillossLU$3.tss; # soil loss per landuse ton/ha
+  Soilloss_tss = Soilloss$3.tss;     # average soil loss ton/ha
   Cover_tss = cover$3.tss;           # average vegetation cover fraction (-)
+  rofract_tss = rofract$3.tss;
+  qavg_tss = Qoutcummm$3.tss;
 
 areamap
   mask;
@@ -86,10 +92,10 @@ initial
   hoursrain = 1.0;    # nr hours it rains on average, influences infl
   dt = scalar(600);   # 10 min is 600 sec
   mask = scalar(DEM gt 0);
+  outlet = pit(LDD);
 
-  nrCells = maptotal(mask);
-  nrCellsNC = maptotal(if(chanmask eq 1,0,mask));
-
+  nrCells = maptotal(if(chanmask eq 1,0,mask)); #maptotal(mask);
+  
   count = 1*mask; # used to count rainy days
   nLU = ordinal(landuse); # output
 
@@ -196,7 +202,7 @@ initial
   perccum = 0*mask;
   rocum = 0*mask;
   rocumout = 0*mask;
-
+  Qtot = 0*mask;
   dx = celllength();
 
   Sed = 0*mask;
@@ -207,7 +213,6 @@ initial
   Depcum = 0*mask;
   ETfcum = 0*mask;
   Conc = 0*mask;
-
  
 dynamic
 
@@ -215,25 +220,23 @@ dynamic
   ### meteo data input ###
   ########################
 
-
   rain = timeinput("$1/CHIR")*mask/rain_fact;
   #CASE SENSITIVE!!!! is the filename is CHIR0000.001 then this should be CHIR, not chir
   
   report P_tss = maptotal(rain)/nrCells;
   
-  Pcum = Pcum + rain;
-  report Pcum*=1.0;
+  report Pcum = Pcum + rain;
   #calculate cumulative P for outut
+
   report Pcum_tss = maptotal(Pcum)/nrCells;   
   # write a graph of the average cumulative rainfall
 
   # hoursrain = if (rain gt 10, 2.0, 1.0);
 
-  # ETo = timeinput(ERA)*mask;
+  # ETo = timeinput("$1/ERA")*mask;
   # ETo = timeinputscalar(ETo_tss, nominal(mask));    # read potential evapotranspiration from a file and give the whole area that value
  
   #Tahir, Mekete & Mengistu, Ashenafi & Mersso, Berhan. (2018). 
-  #Evaluation of livestock feed balance under mixed crop–livestock production system in the central highlands of Ethiopia. Agriculture and Food Security. 7. 10.1186/s40066-018-0170-8. 
   ETo = 4.2*mask;
   ETo = if(day gt 30, 3.0, ETo);
   ETo = if(day gt 61, 3.1, ETo);
@@ -292,7 +295,6 @@ dynamic
   interception = max(0, interception);                      # interception cannot be less than 0
   Pe = max(rain - interception, 0);                         # Estimating effective rainfall (mm)
   intccum = intccum + interception;                         # cumulating interception
-  report intccum_tss = maptotal(intccum)/nrCells;    
 
   ### NOTE: Infiltration and runoff and flow and splash erosion are solved in 10 min intervals with a kinematic wave for Q and V
   
@@ -311,10 +313,15 @@ dynamic
 
   ###loop that does the fast processes per 10 min and uses a kin wave for routing
   repeat {
-
+    
+    #################################
+    ######### Surface water #########
+    #################################
+  
     Pinterval = Pe*exp(-0.693*(count+1)); #mm/dt
-    # this gives a rainfall for each count that is Pe/2, Pe/4, Pe/8 etc. an exponential decline
+    # this gives a rainfall for each step that is Pe/2, Pe/4, Pe/8 etc. an exponential decline
 
+    ### infiltration ###
     store = max(0.0, theta_s-theta)*SD1;                      # effective storage in mm
     Infilcap = infil_cal*hoursrain/maxcount*Ksat*mask;        # infil is a fraction of Ksat 
     Infilcap = min(store, Infilcap);                          # infiltration in mm, is smallest of storage or rainfall
@@ -323,51 +330,46 @@ dynamic
   
     infilcum = infilcum + Infil;
     # infil cumulative in mm on points
-    ### Runoff water height during hours of rain
+
+    ### Runoff water height ###
     WH = cover(max(0, Pinterval-Infilcap)*0.001,0)*mask;  #waterheight in m avg per hour
-  
     WH *= dx/W;  # assume the flow is concentrated over 1/3 of the gridcell
 
-    # manning's velocity and discharge and alpha: A = alphaQ^0.6
+    ### kinematic wave ###
+    # manning's velocity and discharge and alpha: A = alphaQ^0.6    
     V = WH**(2/3)*sqrt(Grad)/N;
     Q = V * WH * W;
     alpha =(N/sqrt(Grad) * (W**(2.0/3.0)))**0.6;
-    ts = ordinal(1);         # not sure what this is
+    ts = ordinal(10);         # not sure what this is    
     Qn = kinematic(LDD, Q, 0, alpha, 0.6, ts, dt, dx);
 
     # new Q, alpha and WH after kin wave
     Qn = cover(Qn,0)*mask;
     A = alpha*(Qn**0.6);
     WH = A/W;
-    
-    # new velocity for flow erosion
+    # new water height   
     V = WH**(2/3)*sqrt(Grad)/N;
-    Qn = V*W*WH;
+    # new velocity for flow erosion
 	
-    # volume water needed for sed concentration
     Vol = WH*W*dx;
+    # volume water needed for sed concentration
   
     WHavg = WHavg + WH;
-
-    # runoff leaving the area
-    #rocumout = maptotal(rocum * if(pit(LDD) ne 0,scalar(1),0));
-    #rocumout = rocumout + maptotal(if(pit(LDD) ne 0,Qn*dt/(dx*dx)*1000,0));
-    
+    # average wh needed for output
     Qavg = Qavg + Qn;
  
-    #############################
-    ########### Erosion #########
-    #############################
+    ###########################
+    ######### Erosion #########
+    ###########################
   
-    #######################################################
-    ### Kinetic energy of rainfall in J/m2 and SPLASH Ds ##
-    #######################################################
-   
-    #Int = rain/hoursrain; # avg rainfall intensity in mm/h
-    Intensity = Pinterval*3600/dt;
+    ### Kinetic energy of rainfall in J/m2 and SPLASH Ds ###
+
     # kinetic energy calculations for splash detachment
     # DT = direct rainfall on open part of the gridcell, 
     # LD is leaf drainage from covered part
+
+    Intensity = Pinterval*3600/dt;
+    # avg rainfall intensity in mm/h
     KE_DT = (1-Cover)*28.3*(1-0.52*exp(-0.042*Intensity))*Pinterval;          # kinetic energy of direct rainfall     
     KE_LD = (1-Litter)*Cover*Pinterval*max(0, 15.3*sqrt(PH) - 5.87);            # kinetic energy of LD in J/m2 proposed by Brandt (1990)
     
@@ -381,16 +383,13 @@ dynamic
     Conc = min(840, if (Vol gt 1e-6, Sed/Vol, 0));  # 840 kg/m3 is the highest conc before the flow is considered mudflow and mannings eq is no longer valid
   
     ##############################################
-    ### Estimating soil particle detachment ######
+    ### transport, flow detachment, deposition ###
     ##############################################
   
     ### transport capacity in kg/m3
 
-	# set V to ero for channel to avoid erosion in channel  
-    #V = if (chanmask eq 0, min(10,V),0); 
-
-    rho_s = 2650; # specific density grains of sand kg/m3
-    omega = Grad*max(0,V-0.004);  # unit stream power 
+    rho_s = 2650;                 # specific density grains (quartz)  kg/m3
+    omega = Grad*max(0,V-0.004);  # unit stream power  m/s
    
     TC = rho_s*Cg*(omega**Dg);  # transport capacity Govers et al. 1995
    
@@ -406,7 +405,8 @@ dynamic
     # potential deposition in kg/cell (negative)   #kg/m3 * (-) * m3/cell  = kg/cell
     Dep = min(TC-Conc,0)*Vs*dt*W*dx;
     Dep = if (WH gt 0.0001, min(TC-Conc,0)*(1-exp(-dt*Vs/WH))*Vol, 0);  
-   # Dep = min(0, max(Dep, -(Sed+Df)))*mask;     # not more deposition than there is sediment
+    Dep = min(0, max(Dep, -Sed))*mask;       
+    # not more deposition than there is sediment
     
     #exclude channel cells, these are not channel equations
     Df = if(chanmask eq 1,0,Df);   
@@ -419,16 +419,15 @@ dynamic
 
     erosion = Df+Ds+Dep + erosion;         # cumulating soil loss  (detachment - deposition, is net loss)                       
   
-    count = count + 1;
 
-    
+    count = count + 1;   
   } until count >= maxcount; #1 or more hours
 
-  ### NOW THE REST OF THE WATER BALANCE ###
+  #####################################
+  ### THE REST OF THE WATER BALANCE ###
+  ##################################### 
 
-  #################################
   ### Actual Evapotranspiration ###
-  #################################
 
   # actual evapotranspiration ETa linear with soil moisture content (mm)
   ETpoint = theta_wp + (theta_fc - theta_wp)*2/3;
@@ -450,28 +449,24 @@ dynamic
                                        # recalculating true ETFactor based on final ETa/ETp 
   ETE0fac = areaaverage(ETfactor, nLU);
 
-  #################################
-  ########### Percolation #########
-  #################################
+  ### Percolation ###
   
   Perc = 24.0*Ksat*(theta/theta_s)**(2+3/lambda);  
   Perc = if(theta lt theta_wp, 0, Perc);
   Perc = min(SoilMoisture, Perc);
   perccum = perccum + Perc;
 
-  #################################################
-  ########### Computing new soil moisture #########
-  #################################################
+  ### water balance: new soil moisture ###
 
   SoilMoisture = SoilMoisture + (Infilday - ETa - Perc);
   SoilMoisture = min(SoilMoisture, theta_s*SD1);
-  report SoilMoisture = max(0, SoilMoisture);                       # soil moisture cannot be negative
+  SoilMoisture = max(0, SoilMoisture);                       # soil moisture cannot be negative
   theta = SoilMoisture/SD1*mask;                      # findng soil moisture at surface
   se = theta/theta_s;
 
-  ######################################################
-  #### reporting cumulative graphs (spatial average) ###
-  ######################################################
+  #################################
+  ### reporting maps and graphs ###
+  #################################
  
   report Cover_tss = timeoutput(nLU, areaaverage(Cover, nLU));    
   # report avg cover per land use type in a graph
@@ -481,18 +476,39 @@ dynamic
   report etacum_tss = maptotal(ETacum)/nrCells;
   report ETfact_tss = maptotal(ETfactor)/nrCells;           # computing time series ETFactor
 
+  report intccum_tss = maptotal(intccum)/nrCells;    
+  report infil_tss = maptotal(infilcum)/nrCells; # cumulative infil 
   report LUtheta_tss = timeoutput(nLU,theta);
 
+  # total runoff in the area
   rocum = rocum + WHavg/maxcount*1000; 
   report runoff_tss = maptotal(rocum)/nrCells;  # cumulative water surface 
-  report infil_tss = maptotal(infilcum)/nrCells; # cumulative infil 
 
-  #report outflow_mm.tss=rocumout; # outflowmout of the area, NOT the runoff that is on the surface 
+  # outflow of the area. Because we do not have a complete kin wave
+  # we assume that all water in the channel reaches the outlet in a day
 
-  #report Qavg = Qavg/maxcount;
+### kinematic wave approach:
+  WHch = if(chanmask gt 0,WHavg/maxcount*dx/chanwidth,0);
+  Pch = (chanwidth+2*WHch);
+  Ach = (chanwidth*WHch);
+  alphach =(N/sqrt(Grad) * ((chanwidth+2*WHch)**0.667))**0.6;
+  Qch = (Ach/alphach)**(5.0/3.0);
+  #Qch = Ach * ((Ach/Pch)**0.667)*sqrt(Grad)/0.05;
   
-  #report rofract.tss = rocumout/((maptotal(Pcum)+1)/nrCells);
- 
+  ts = ordinal(50);         # not sure what this is
+  ktime = 8*3600; # 4 hours flow
+  Qnch = kinematic(LDDchan, Qch, 0, alphach, 0.6, ts, ktime, dx);
+  report Qncha = cover(Qnch,0)*mask; # m3/s
+  Qtot += Qnch*ktime;
+  rocumout = maptotal(if(outlet ne 0, Qtot, 0)/cellarea()*1000)/nrCells;
+
+##  Qtot = Qtot + Qavg/maxcount*dt*chanmask * chanwidth/dx;   # flow in channel cells m3
+##  rocumout = maptotal(Qtot/cellarea()*1000)/nrCells;
+##  WHch = if(chanmask gt 0,WH*chanwidth/dx,0);
+##  Qtot = Qtot + WHch;
+
+  rainavg = maptotal(Pcum+1)/nrCells;
+  report rofract_tss = timeoutput(outlet, rocumout/rainavg); #maptotal(Qtot)/(maptotal(Pcum+1));
   report perc_tss = maptotal(perccum)/nrCells;
 
   # converting from kg/gridcell to ton/ha kg: kg to ton factor 1000 
@@ -507,6 +523,7 @@ dynamic
   soilloss = max(0, erosion*factor);            
         
   report Soilloss_map = soilloss;
+  report Soilloss_tss= maptotal(soilloss)/nrCells;   # area avg soilloss ton/ha
   report Soillosslu_tss = timeoutput(nLU, soilloss); # soilloss per land unit ton/ha
 
   # classify with FAO classification
@@ -518,7 +535,6 @@ dynamic
     if(soilloss ge 20 and soilloss lt 50, 4, 
     if(soilloss ge 50 and soilloss lt 100, 5, 6)))))));
   report erosrate_map = ordinal(erosrate);
-
 
   # set everything to zero for the next day, 
   # we assume there is no runoff that lasts until the ext day
